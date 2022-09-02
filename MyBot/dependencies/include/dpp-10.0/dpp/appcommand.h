@@ -27,6 +27,7 @@
 #include <dpp/role.h>
 #include <dpp/user.h>
 #include <variant>
+#include <map>
 #include <dpp/nlohmann/json_fwd.hpp>
 #include <dpp/json_interface.h>
 
@@ -89,6 +90,7 @@ typedef std::variant<std::monostate, std::string, int64_t, bool, snowflake, doub
 struct DPP_EXPORT command_option_choice : public json_interface<command_option_choice>  {
 	std::string name;	//!< Option name (1-32 chars)
 	command_value value;	//!< Option value
+	std::map<std::string, std::string> name_localizations; //!< Localisations of command option name
 
 	/**
 	 * @brief Construct a new command option choice object
@@ -96,6 +98,15 @@ struct DPP_EXPORT command_option_choice : public json_interface<command_option_c
 	command_option_choice() = default;
 
 	virtual ~command_option_choice() = default;
+
+	/**
+	 * @brief Add a localisation for this command option choice
+	 * @see https://discord.com/developers/docs/reference#locales
+	 * @param language Name of language, see the list of locales linked to above.
+	 * @param _name name of command option choice in the specified language
+	 * @return command_option_choice& reference to self for fluent chaining
+	 */
+	command_option_choice& add_localization(const std::string& language, const std::string& _name);
 
 	/**
 	 * @brief Construct a new command option choice object
@@ -150,13 +161,29 @@ struct DPP_EXPORT command_option : public json_interface<command_option>  {
 	std::vector<channel_type> channel_types;     //!< Allowed channel types for channel snowflake id options
 	command_option_range min_value;              //!< Minimum value allowed, for co_number and co_integer types only
 	command_option_range max_value;              //!< Maximum value allowed, for co_number and co_integer types only
+	std::map<std::string, std::string> name_localizations; //!< Localisations of command name
+	std::map<std::string, std::string> description_localizations; //!< Localisations of command description
+
 
 	/**
 	 * @brief Construct a new command option object
 	 */
 	command_option() = default;
 
+	/**
+	 * @brief Destroy the command option object
+	 */
 	virtual ~command_option() = default;
+
+	/**
+	 * @brief Add a localisation for this slash command option
+	 * @see https://discord.com/developers/docs/reference#locales
+	 * @param language Name of language, see the list of locales linked to above.
+	 * @param _name name of slash command option in the specified language
+	 * @param _description description of slash command option in the specified language
+	 * @return command_option& reference to self for fluent chaining
+	 */
+	command_option& add_localization(const std::string& language, const std::string& _name, const std::string& _description);
 
 	/**
 	 * @brief Construct a new command option object
@@ -192,6 +219,22 @@ struct DPP_EXPORT command_option : public json_interface<command_option>  {
 	 * @return command_option& return a reference to sef for chaining of calls
 	 */
 	command_option& set_max_value(command_option_range max_v);
+
+	/**
+	 * @brief Set the minimum string length of the option. 
+	 * Only valid if the type is co_string
+	 * @param min_v Minimum value
+	 * @return command_option& return a reference to sef for chaining of calls
+	 */
+	command_option& set_min_length(command_option_range min_v);
+
+	/**
+	 * @brief Set the maximum string length of the option. 
+	 * Only valid if the type is co_string
+	 * @param max_v Maximum value
+	 * @return command_option& return a reference to sef for chaining of calls
+	 */
+	command_option& set_max_length(command_option_range max_v);
 
 	/**
 	 * @brief Add a sub-command option
@@ -419,7 +462,7 @@ public:
 	 *
 	 * @return std::string JSON string
 	 */
-	virtual std::string build_json(bool with_id = false) const;
+	std::string build_json(bool with_id = false) const;
 
 	/**
 	 * @brief Destroy the interaction modal response object
@@ -442,7 +485,7 @@ struct DPP_EXPORT command_resolved {
 	/**
 	 * @brief Resolved total guild member permissions in the channel, including overwrites
 	 */
-	std::map<dpp::snowflake, uint64_t> member_permissions;
+	std::map<dpp::snowflake, permission> member_permissions;
 	/**
 	 * @brief Resolved roles
 	 */
@@ -472,6 +515,17 @@ struct DPP_EXPORT command_data_option {
 	command_value value;                       //!< Optional: the value of the pair
 	std::vector<command_data_option> options;  //!< Optional: present if this option is a group or subcommand
 	bool focused;                              //!< Optional: true if this option is the currently focused option for autocomplete
+
+	/**
+	 * @brief Get an option value by index
+	 * 
+	 * @tparam Type to get from the parameter
+	 * @param index index number of parameter
+	 * @return T returned type
+	 */
+	template <typename T> T& get_value(size_t index) {
+		return std::get<T>(options.at(index).value);
+	}
 };
 
 /**
@@ -515,6 +569,25 @@ struct DPP_EXPORT command_interaction {
 	std::vector<command_data_option> options;  //!< Optional: the params + values from the user
 	slashcommand_contextmenu_type type;        //!< type of the command interaction
 	dpp::snowflake target_id;                  //!< Non-zero target ID for context menu actions. e.g. user id or message id whom clicked or tapped with the context menu https://discord.com/developers/docs/interactions/application-commands#user-commands
+
+	/**
+	 * @brief Get an option value by index
+	 * 
+	 * @tparam Type to get from the parameter
+	 * @param index index number of parameter
+	 * @return T returned type
+	 */
+	template <typename T> T& get_value(size_t index) {
+		return std::get<T>(options.at(index).value);
+	}
+
+	/**
+	 * @brief Return a ping/mention for the slash command
+	 *
+	 * @return std::string mention. e.g. `</airhorn:816437322781949972>`
+	 * @note If you want a mention for a subcommand or subcommand group, you can use dpp::utility::slashcommand_mention
+	 */
+	std::string get_mention() const;
 };
 
 /**
@@ -562,7 +635,7 @@ struct DPP_EXPORT component_interaction {
 /**
  * @brief An auto complete interaction
  */
-struct DPP_EXPORT autocomplete_interaction {
+struct DPP_EXPORT autocomplete_interaction : public command_interaction {
 };
 
 /**
@@ -587,9 +660,30 @@ void from_json(const nlohmann::json& j, autocomplete_interaction& ai);
 
 /**
  * @brief An interaction represents a user running a command and arrives
- * via the dpp::cluster::on_interaction_create event.
+ * via the dpp::cluster::on_interaction_create event. This is further split
+ * into the events on_form_submit, on_slashcommand, on_user_context_menu,
+ * on_button_click, on_select_menu, etc.
  */
 class DPP_EXPORT interaction : public managed, public json_interface<interaction>  {
+
+	/**
+	 * @brief Get a resolved object from the resolved set
+	 * 
+	 * @tparam T type of object to retrieve
+	 * @tparam C container defintion for resolved container
+	 * @param id Snowflake ID
+	 * @param resolved_set container for the type
+	 * @return const T& retrieved type
+	 * @throws dpp::logic_exception on object not found in resolved set
+	 */
+	template<typename T, typename C> const T& get_resolved(snowflake id, const C& resolved_set) const {
+		auto i = resolved_set.find(id);
+		if (i == resolved_set.end()) {
+			throw dpp::logic_exception("ID not found in resolved properties of application command");
+		}
+		return i->second;
+	}
+
 public:
 	snowflake application_id;                                   //!< id of the application this interaction is for
 	uint8_t	type;                                               //!< the type of interaction
@@ -597,9 +691,10 @@ public:
 	snowflake guild_id;                                         //!< Optional: the guild it was sent from
 	snowflake channel_id;                                       //!< Optional: the channel it was sent from
 	snowflake message_id;					    //!< Originating message id for context menu actions
+	permission app_permissions;				    //!< Permissions of the bot in the channel/guild where this command was issued
 	message msg;						    //!< Originating message for context menu actions
 	guild_member member;                                        //!< Optional: guild member data for the invoking user, including permissions
-	user usr;                                                   //!< Optional: user object for the invoking user, if invoked in a DM
+	user usr;                                                   //!< User object for the invoking user
 	std::string token;                                          //!< a continuation token for responding to the interaction
 	uint8_t version;                                            //!< read-only property, always 1
 	command_resolved resolved;				    //!< Resolved user/role etc
@@ -612,7 +707,118 @@ public:
 	 */
 	interaction();
 
+	/**
+	 * @brief Destroy the interaction object
+	 */
 	virtual ~interaction() = default;
+
+	/**
+	 * @brief Get a user associated with the slash command from the resolved list.
+	 * The resolved list contains associated structures for this command and does not
+	 * use the cache or require any extra API calls.
+	 * 
+	 * @param id User snowflake ID to find
+	 * @return const dpp::user& user
+	 * @throws dpp::logic_exception on object not found in resolved set
+	 */
+	const dpp::user& get_resolved_user(snowflake id) const;
+
+	/**
+	 * @brief Get the channel this command originated on
+	 * 
+	 * @return const dpp::channel& channel
+	 * @throws dpp::logic_error Command originated from a DM or channel not in cache
+	 */
+	const dpp::channel& get_channel() const;
+
+	/**
+	 * @brief Get the guild this command originated on
+	 * 
+	 * @return const dpp::guild& guild 
+	 * @throws dpp::logic_error Command originated from a DM or guild not in cache
+	 */
+	const dpp::guild& get_guild() const;
+
+	/**
+	 * @brief Get the user who issued this command
+	 * 
+	 * @return const dpp::user& user
+	 */
+	const dpp::user& get_issuing_user() const;
+
+	/**
+	 * @brief Get the message this action refers to if it is a context menu command
+	 * 
+	 * @return const dpp::message& context menu message
+	 */
+	const dpp::message& get_context_message() const;
+
+	/**
+	 * @brief Get a role associated with the slash command from the resolved list.
+	 * The resolved list contains associated structures for this command and does not
+	 * use the cache or require any extra API calls.
+	 * 
+	 * @param id Role snowflake ID to find
+	 * @return const dpp::role& role
+	 * @throws dpp::logic_exception on object not found in resolved set
+	 */
+	const dpp::role& get_resolved_role(snowflake id) const;
+
+	/**
+	 * @brief Get a channel associated with the slash command from the resolved list.
+	 * The resolved list contains associated structures for this command and does not
+	 * use the cache or require any extra API calls.
+	 * 
+	 * @param id Channel snowflake ID to find
+	 * @return const dpp::channel& channel
+	 * @throws dpp::logic_exception on object not found in resolved set
+	 */
+	const dpp::channel& get_resolved_channel(snowflake id) const;
+
+	/**
+	 * @brief Get a guild member associated with the slash command from the resolved list.
+	 * The resolved list contains associated structures for this command and does not
+	 * use the cache or require any extra API calls.
+	 * 
+	 * @param id User snowflake ID to find
+	 * @return const dpp::guild_member& guild member
+	 * @throws dpp::logic_exception on object not found in resolved set
+	 */
+	const dpp::guild_member& get_resolved_member(snowflake id) const;
+
+	/**
+	 * @brief Get a permission associated with the slash command from the resolved list.
+	 * The resolved list contains associated structures for this command and does not
+	 * use the cache or require any extra API calls.
+	 * 
+	 * @param id User snowflake ID to find
+	 * @return const dpp::permission& permissions for the user including overrides on
+	 * the channel where the command was issued.
+	 * @throws dpp::logic_exception on object not found in resolved set
+	 */
+	const dpp::permission& get_resolved_permission(snowflake id) const;
+
+	/**
+	 * @brief Get a message associated with the slash command from the resolved list.
+	 * The resolved list contains associated structures for this command and does not
+	 * use the cache or require any extra API calls.
+	 * 
+	 * @param id Message snowflake ID to find
+	 * @return const dpp::message& message
+	 * @throws dpp::logic_exception on object not found in resolved set
+	 */
+	const dpp::message& get_resolved_message(snowflake id) const;
+
+	/**
+	 * @brief Get an uploaded attachment associated with the slash command from the resolved list.
+	 * The resolved list contains associated structures for this command and does not
+	 * use the cache or require any extra API calls.
+	 * 
+	 * @param id Attachment snowflake ID to find
+	 * @return const dpp::attachment& file attachment
+	 * @throws dpp::logic_exception on object not found in resolved set
+	 */
+	const dpp::attachment& get_resolved_attachment(snowflake id) const;
 
 	/**
 	 * @brief Get the command interaction object
@@ -786,8 +992,7 @@ public:
 	snowflake application_id;
 
 	/**
-	 * @brief Context menu type, defaults to none
-	 * 
+	 * @brief Context menu type, defaults to dpp::ctxm_chat_input
 	 */
 	slashcommand_contextmenu_type type;
 
@@ -807,12 +1012,15 @@ public:
 	std::vector<command_option> options;
 
 	/**
-	 * @brief whether the command is enabled by default when the app is added to a guild
+	 * @brief whether the command is enabled by default when the app is added to a guild.
+	 * This has no effect as the default_member_permissions value is used instead.
+	 * @deprecated Discord discourage use of this value and instead you should use default_member_permissions.
 	 */
 	bool default_permission;
 
 	/**
 	 * @brief command permissions
+	 * @deprecated Discord discourage use of this value and instead you should use default_member_permissions.
 	 */
 	std::vector<command_permission> permissions;
 
@@ -820,6 +1028,30 @@ public:
 	 * @brief autoincrementing version identifier updated during substantial record changes
 	 */
 	snowflake version;
+
+	/**
+	 * @brief Localisations of command name
+	 */
+	std::map<std::string, std::string> name_localizations;
+
+	/**
+	 * @brief Localisations of command description
+	 */
+	std::map<std::string, std::string> description_localizations;
+
+	/**
+	 * @brief The default permissions of this command on a guild.
+	 * D++ defaults this to p_use_application_commands.
+	 * @note You can set it to 0 to disable the command for everyone except admins by default
+	 */
+	permission default_member_permissions;
+
+	/**
+	 * @brief True if this command should be allowed in a DM
+	 * D++ defaults this to false. Cannot be set to true in a guild
+	 * command, only a global command.
+	 */
+	bool dm_permission;
 
 	/**
 	 * @brief Construct a new slashcommand object
@@ -841,6 +1073,34 @@ public:
 	virtual ~slashcommand();
 
 	/**
+	 * @brief Add a localisation for this slash command
+	 * @see https://discord.com/developers/docs/reference#locales
+	 * @param language Name of language, see the list of locales linked to above.
+	 * @param _name name of slash command in the specified language
+	 * @param _description description of slash command in the specified language
+	 * @return slashcommand& reference to self for fluent chaining
+	 */
+	slashcommand& add_localization(const std::string& language, const std::string& _name, const std::string& _description);
+
+	/**
+	 * @brief Set the dm permission for the command
+	 * 
+	 * @param dm true to allow this command in dms
+	 * @return slashcommand& reference to self
+	 */
+	slashcommand& set_dm_permission(bool dm);
+
+	/**
+	 * @brief Set the default permissions of the slash command
+	 * 
+	 * @param defaults default permissions to set. This is a permission bitmask
+	 * @note You can set it to 0 to disable the command for everyone except admins by default
+	 *
+	 * @return slashcommand& reference to self
+	 */
+	slashcommand& set_default_permissions(uint64_t defaults);
+
+	/**
 	 * @brief Add an option (parameter)
 	 *
 	 * @param o option (parameter) to add
@@ -852,6 +1112,7 @@ public:
 	 * @brief Set the type of the slash command (only for context menu entries)
 	 * 
 	 * @param _type Type of context menu entry this command represents
+	 * @note If the type is dpp::ctxm_chat_input, the command name will be set to lowercase.
 	 * @return slashcommand& reference to self for chaining of calls
 	 */
 	slashcommand& set_type(slashcommand_contextmenu_type _type);
@@ -862,6 +1123,7 @@ public:
 	 * @param n name of command
 	 * @note The maximum length of a command name is 32 UTF-8 codepoints.
 	 * If your command name is longer than this, it will be truncated.
+	 * The command name will be set to lowercase when the type is the default dpp::ctxm_chat_input.
 	 * @return slashcommand& reference to self for chaining of calls
 	 */
 	slashcommand& set_name(const std::string &n);
@@ -889,6 +1151,7 @@ public:
 	 *
 	 * @param p permission to add
 	 * @return slashcommand& reference to self for chaining of calls
+	 * @deprecated Discord discourage use of this value and instead you should use default_member_permissions.
 	 */
 	slashcommand& add_permission(const command_permission& p);
 
@@ -898,8 +1161,17 @@ public:
 	 *        dpp::guild_command_edit_permissions
 	 *
 	 * @return slashcommand& reference to self for chaining of calls
+	 * @deprecated Discord discourage use of this value and instead you should use default_member_permissions.
 	 */
 	slashcommand& disable_default_permissions();
+
+	/**
+	 * @brief Return a ping/mention for the slash command
+	 *
+	 * @return std::string mention. e.g. `</airhorn:816437322781949972>`
+	 * @note If you want a mention for a subcommand or subcommand group, you can use dpp::utility::slashcommand_mention
+	 */
+	std::string get_mention() const;
 
 	/**
 	 * @brief Fill object properties from JSON
@@ -915,7 +1187,7 @@ public:
 	 * @param with_id True if to include the ID in the JSON
 	 * @return std::string JSON string
 	 */
-	virtual std::string build_json(bool with_id = false) const;
+	std::string build_json(bool with_id = false) const;
 };
 
 /**

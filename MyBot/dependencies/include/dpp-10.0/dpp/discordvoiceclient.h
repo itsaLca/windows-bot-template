@@ -23,20 +23,6 @@
 #include <dpp/export.h>
 
 #include <cerrno>
-
-#ifdef _WIN32
-#include <WinSock2.h>
-#include <WS2tcpip.h>
-#include <io.h>
-#else
-#include <netinet/in.h>
-#include <resolv.h>
-#include <netdb.h>
-#include <sys/socket.h>
-#include <netinet/tcp.h>
-#include <unistd.h>
-#endif
-
 #include <cstdio>
 #include <cstdlib>
 #include <sys/types.h>
@@ -56,6 +42,9 @@
 #include <thread>
 #include <deque>
 #include <mutex>
+#include <memory>
+#include <future>
+#include <functional>
 #include <chrono>
 
 using json = nlohmann::json;
@@ -152,10 +141,111 @@ class DPP_EXPORT discord_voice_client : public websocket_client
 	std::vector<voice_out_packet> outbuf;
 
 	/**
-	 * @brief Input buffer. Each string is a received UDP
-	 * packet. These will usually be RTP.
+	 * @brief Data type of RTP packet sequence number field.
 	 */
-	std::vector<std::string> inbuf;
+	using rtp_seq_t = uint16_t;
+	using rtp_timestamp_t = uint32_t;
+
+	/**
+	 * @brief Keeps track of the voice payload to deliver to voice handlers.
+	 */
+	struct voice_payload {
+		/**
+		 * @brief The sequence number of the RTP packet that generated this
+		 * voice payload.
+		 */
+		rtp_seq_t seq;
+		/**
+		 * @brief The timestamp of the RTP packet that generated this voice
+		 * payload.
+		 *
+		 * The timestamp is used to detect the order around where sequence
+		 * number wraps around.
+		 */
+		rtp_timestamp_t timestamp;
+		/**
+		 * @brief The event payload that voice handlers receive.
+		 */
+		std::unique_ptr<voice_receive_t> vr;
+		
+		/**
+		 * @brief For priority_queue sorting.
+		 * @return true if "this" has lower priority that "other",
+		 *         i.e. appears later in the queue; false otherwise.
+		 */
+		bool operator<(const voice_payload& other) const;
+	};
+
+	struct voice_payload_parking_lot {
+		/**
+		 * @brief The range of RTP packet sequence number and timestamp in the lot.
+		 *
+		 * The minimum is used to drop packets that arrive too late. Packets
+		 * less than the minimum have been delivered to voice handlers and
+		 * there is no going back. Unfortunately we just have to drop them.
+		 *
+		 * The maximum is used, at flush time, to calculate the minimum for
+		 * the next batch. The maximum is also updated every time we receive an
+		 * RTP packet with a larger value.
+		 */
+		struct seq_range_t {
+			rtp_seq_t min_seq, max_seq;
+			rtp_timestamp_t min_timestamp, max_timestamp;
+		} range;
+		/**
+		 * @brief The queue of parked voice payloads.
+		 * 
+		 * We group payloads and deliver them to handlers periodically as the
+		 * handling of out-of-order RTP packets. Payloads in between flushes
+		 * are parked and sorted in this queue.
+		 */
+		std::priority_queue<voice_payload> parked_payloads;
+		/**
+		 * @brief The decoder ctls to be set on the decoder.
+		 */
+		std::vector<std::function<void(OpusDecoder&)>> pending_decoder_ctls;
+		/**
+		 * @brief libopus decoder
+		 *
+		 * Shared with the voice courier thread that does the decoding.
+		 * This is not protected by a mutex because only the courier thread
+		 * uses the decoder.
+		 */
+		std::shared_ptr<OpusDecoder> decoder;
+	};
+	/**
+	 * @brief Thread used to deliver incoming voice data to handlers.
+	 */
+	std::thread voice_courier;
+	/**
+	 * @brief Shared state between this voice client and the courier thread.
+	 */
+	struct courier_shared_state_t {
+		/**
+		 * @brief Protects all following members.
+		 */
+		std::mutex mtx;
+		/**
+		 * @brief Signaled when there is a new payload to deliver or terminating state has changed.
+		 */
+		std::condition_variable signal_iteration;
+		/**
+		 * @brief Voice buffers to be reported to handler, grouped by speaker.
+		 *
+		 * Buffers are parked here and flushed every 500ms.
+		 */
+		std::map<snowflake, voice_payload_parking_lot> parked_voice_payloads;
+		/**
+		 * @brief Used to signal termination.
+		 *
+		 * @note Pending payloads are delivered first before termination.
+		 */
+		bool terminating = false;
+	} voice_courier_shared_state;
+	/**
+	 * @brief The run loop of the voice courier thread.
+	 */
+	static void voice_courier_loop(discord_voice_client&, courier_shared_state_t&);
 
 	/**
 	 * @brief If true, audio packet sending is paused
@@ -169,11 +259,6 @@ class DPP_EXPORT discord_voice_client : public websocket_client
 	OpusEncoder* encoder;
 
 	/**
-	 * @brief libopus decoder
-	 */
-	OpusDecoder* decoder;
-
-	/**
 	 * @brief libopus repacketizer
 	 * (merges frames into one packet)
 	 */
@@ -183,11 +268,6 @@ class DPP_EXPORT discord_voice_client : public websocket_client
 	 * @brief libopus encoder
 	 */
 	void* encoder;
-
-	/**
-	 * @brief libopus decoder
-	 */
-	void* decoder;
 
 	/**
 	 * @brief libopus repacketizer
@@ -200,11 +280,6 @@ class DPP_EXPORT discord_voice_client : public websocket_client
 	 * @brief File descriptor for UDP connection
 	 */
 	dpp::socket fd;
-
-	/**
-	 * @brief Socket address of voice server
-	 */
-	sockaddr_in servaddr;
 
 	/**
 	 * @brief Secret key for encrypting voice.
@@ -234,7 +309,7 @@ class DPP_EXPORT discord_voice_client : public websocket_client
 	/**
 	 * @brief Maps receiving ssrc to user id
 	 */
-	std::unordered_map<uint32_t, snowflake> ssrcMap;
+	std::unordered_map<uint32_t, snowflake> ssrc_map;
 
 	/**
 	 * @brief This is set to true if we have started sending audio.
@@ -383,11 +458,6 @@ public:
 	bool terminating;
 
 	/**
-	 * @brief Decode received voice packets to PCM
-	 */
-	bool decode_voice_recv;
-
-	/**
 	 * @brief Heartbeat interval for sending heartbeat keepalive
 	 */
 	uint32_t heartbeat_interval;
@@ -421,6 +491,52 @@ public:
 	 * @brief Channel ID
 	 */
 	snowflake channel_id;
+
+	/**
+	 * @brief The audio type to be sent. The default type is recorded audio.
+	 *
+	 * If the audio is recorded, the sending of audio packets is throttled.
+	 * Otherwise, if the audio is live, the sending is not throttled.
+	 *
+	 * Discord voice engine is expecting audio data as if they were from
+	 * some audio device, e.g. microphone, where the data become available
+	 * as they get captured from the audio device.
+	 *
+	 * In case of recorded audio, unlike from a device, the audio data are
+	 * usually instantly available in large chunks. Throttling is needed to
+	 * simulate audio data coming from an audio device. In case of live audio,
+	 * the throttling is by nature, so no extra throttling is needed.
+	 *
+	 * Using live audio mode for recorded audio can cause Discord to skip
+	 * audio data because Discord does not expect to receive, say, 3 minutes'
+	 * worth of audio data in 1 second.
+	 *
+	 * Use discord_voice_client::set_send_audio_type to change this value as
+	 * it ensures thread safety.
+	 */
+	enum send_audio_type_t
+	{
+	    satype_recorded_audio,
+	    satype_live_audio,
+	} send_audio_type = satype_recorded_audio;
+
+	/**
+	 * @brief Sets the gain for the specified user.
+	 *
+	 * Similar to the User Volume slider, controls the listening volume per user.
+	 * Uses native Opus gain control, so clients don't have to perform extra
+	 * audio processing.
+	 *
+	 * The gain setting will affect the both individual and combined voice audio.
+	 *
+	 * The gain value can also be set even before the user connects to the voice
+	 * channel.
+	 *
+	 * @param user_id The ID of the user where the gain is to be controlled.
+	 * @param factor Nonnegative factor to scale the amplitude by, where 1.f reverts
+	 *               to the default volume.
+	 */
+	void set_user_gain(snowflake user_id, float factor);
 
 	/**
 	 * @brief Log a message to whatever log the user is using.
@@ -590,6 +706,13 @@ public:
 	 * @throw dpp::voice_exception if voice support is not compiled into D++
 	 */
 	discord_voice_client& send_silence(const uint64_t duration);
+
+	/**
+	 * @brief Sets the audio type that will be sent with send_audio_* methods.
+	 *
+	 * @see send_audio_type_t
+	 */
+	discord_voice_client& set_send_audio_type(send_audio_type_t type);
 
 	/**
 	 * @brief Set the timescale in nanoseconds.

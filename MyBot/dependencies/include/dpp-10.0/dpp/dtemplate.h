@@ -78,7 +78,7 @@ public:
 	/**
 	 * @brief Destroy the dtemplate object
 	 */
-	~dtemplate();
+	virtual ~dtemplate() = default;
 	
 	/** Read class values from json object
 	 * @param j A json object to read from
@@ -92,7 +92,7 @@ public:
 	 * @param with_id Add ID to output
 	 * @return std::string JSON content 
 	 */
-	virtual std::string build_json(bool with_id = false) const;
+	std::string build_json(bool with_id = false) const;
 
 };
 
